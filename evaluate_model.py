@@ -7,15 +7,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import random
+import json
+import os
 
 # ================================================================================
 # 설정 변수
 # ================================================================================
 MODEL_PATH = 'best_gender_model.pth'  # 평가할 모델 파일 경로
-NUM_TEST_SAMPLES = 100  # 평가할 랜덤 샘플 개수 (원하는 숫자로 변경 가능: 100, 500, 1000 등)
+NUM_TEST_SAMPLES = 50  # 평가할 랜덤 샘플 개수 (원하는 숫자로 변경 가능: 100, 500, 1000 등)
 RANDOM_SEED = None  # None: 매번 랜덤, 숫자: 재현성을 위한 고정 시드
 BATCH_SIZE = 32  # 배치 크기
 
@@ -49,25 +51,46 @@ ds = load_dataset("ashraq/tmdb-people-image")
 total_size = len(ds['train'])
 print(f"전체 데이터셋 크기: {total_size:,}개")
 
+# 학습에 사용한 인덱스 로드 (있는 경우)
+training_indices = set()
+training_indices_file = 'training_indices.json'
+if os.path.exists(training_indices_file):
+    with open(training_indices_file, 'r') as f:
+        training_indices = set(json.load(f))
+    print(f"[데이터 분리] 학습에 사용한 인덱스 {len(training_indices)}개를 제외합니다.")
+else:
+    print(f"[경고] '{training_indices_file}' 파일을 찾을 수 없습니다.")
+    print(f"  학습 데이터와 평가 데이터가 겹칠 수 있습니다.")
+    print(f"  people_gender.py를 먼저 실행하여 학습을 완료하세요.")
+
+# 학습에 사용하지 않은 인덱스만 사용
+available_indices = [i for i in range(total_size) if i not in training_indices]
+print(f"평가에 사용 가능한 인덱스: {len(available_indices):,}개")
+
+if len(available_indices) == 0:
+    raise ValueError("평가에 사용할 수 있는 데이터가 없습니다! (모든 데이터가 학습에 사용됨)")
+
 # 메모리 효율성을 위해 충분한 샘플을 먼저 선택
 # 필터링 후에도 NUM_TEST_SAMPLES만큼 남도록 여유있게 샘플링
 # (사망한 사람, 성별 미지정 등을 고려하여 3-4배 정도 샘플링)
 SAMPLE_MULTIPLIER = 4  # 필터링 후 손실을 고려한 배수
 sample_size = max(NUM_TEST_SAMPLES * SAMPLE_MULTIPLIER, 1000)  # 최소 1000개
 
-if sample_size < total_size:
+if sample_size < len(available_indices):
     print(f"메모리 효율성을 위해 먼저 {sample_size}개 샘플링 중...")
-    # 랜덤 샘플링을 위한 인덱스 생성
-    indices = list(range(total_size))
-    random.shuffle(indices)
-    selected_indices = indices[:sample_size]
+    # 사용 가능한 인덱스에서 랜덤 샘플링
+    random.shuffle(available_indices)
+    selected_indices = available_indices[:sample_size]
     selected_indices.sort()  # 정렬하여 순차 접근으로 성능 향상
     # 선택된 인덱스만 로드하여 DataFrame 생성
     df = pd.DataFrame(ds['train'].select(selected_indices))
+    # 원본 인덱스 추가
+    df['original_index'] = selected_indices
     print(f"샘플링된 데이터 개수: {len(df)}개")
 else:
-    print("전체 데이터셋을 DataFrame으로 변환 중... (시간이 걸릴 수 있습니다)")
-    df = pd.DataFrame(ds['train'])
+    print("사용 가능한 전체 데이터셋을 DataFrame으로 변환 중... (시간이 걸릴 수 있습니다)")
+    df = pd.DataFrame(ds['train'].select(available_indices))
+    df['original_index'] = available_indices
     print(f"전체 데이터 개수: {len(df)}개")
 
 # 사망한 사람 제외
@@ -186,18 +209,32 @@ print("\n" + "=" * 80)
 print("평가 실행")
 print("=" * 80)
 
-gender_names = {0: "여성", 1: "남성"}
+gender_names = {0: "여성", 1: "남성"}  # 콘솔 출력용 (한글)
+gender_names_en = {0: "Female", 1: "Male"}  # 이미지 표시용 (영어)
 correct = 0
 total = 0
 class_correct = [0, 0]  # [여성, 남성]
 class_total = [0, 0]
 all_predictions = []
 all_labels = []
+all_images = []  # 원본 이미지 저장
+all_confidences = []  # 신뢰도 저장
 
 print("\n예측 결과:")
 print("-" * 80)
 
+# 원본 이미지를 DataFrame에서 가져오는 함수
+def get_original_image(idx):
+    """DataFrame에서 원본 이미지 가져오기"""
+    image = test_df.iloc[idx]['image']
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(image)
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    return image
+
 with torch.no_grad():
+    sample_idx = 0  # 전체 샘플 인덱스 추적
     for batch_idx, (images, labels) in enumerate(test_loader):
         images = images.to(device)
         labels = labels.to(device)
@@ -226,10 +263,103 @@ with torch.no_grad():
             class_total[label] += 1
             all_predictions.append(pred)
             all_labels.append(label)
+            # DataFrame에서 원본 이미지 가져오기
+            all_images.append(get_original_image(sample_idx))
+            all_confidences.append(confidence)
             
             # 결과 출력 (모든 샘플)
             print(f"{symbol} 실제: {actual_gender:3s} | 예측: {predicted_gender:3s} | "
                   f"신뢰도: {confidence:.1f}%")
+            
+            sample_idx += 1
+
+def show_predictions(images, labels, predictions, confidences, num_cols=5, img_size=224):
+    """예측 결과와 함께 이미지를 그리드 형태로 표시 (PIL 사용)"""
+    num_images = len(images)
+    num_rows = (num_images + num_cols - 1) // num_cols
+    
+    # 각 셀 크기 계산 (이미지 + 텍스트 영역)
+    text_height = 60  # 텍스트 영역 높이
+    cell_width = img_size
+    cell_height = img_size + text_height
+    
+    # 전체 그리드 이미지 생성
+    grid_width = num_cols * cell_width
+    grid_height = num_rows * cell_height
+    grid_image = Image.new('RGB', (grid_width, grid_height), color='white')
+    
+    # 폰트 로드 시도 (시스템 폰트 사용)
+    try:
+        # Linux에서 일반적인 폰트 경로들 시도
+        font_paths = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            '/System/Library/Fonts/Helvetica.ttc',  # macOS
+        ]
+        font = None
+        for path in font_paths:
+            try:
+                font = ImageFont.truetype(path, 16)
+                break
+            except:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+    except:
+        font = ImageFont.load_default()
+    
+    # 각 이미지를 그리드에 배치
+    for idx in range(num_images):
+        row = idx // num_cols
+        col = idx % num_cols
+        
+        # 이미지 위치 계산
+        x = col * cell_width
+        y = row * cell_height
+        
+        # 이미지 리사이즈 및 붙여넣기
+        img = images[idx].copy()
+        img = img.resize((img_size, img_size), Image.Resampling.LANCZOS)
+        grid_image.paste(img, (x, y))
+        
+        # 텍스트 영역에 정보 표시
+        draw = ImageDraw.Draw(grid_image)
+        text_y = y + img_size + 5
+        
+        # 실제/예측/신뢰도 정보 (영어로 표시)
+        actual = gender_names_en[labels[idx]]
+        predicted = gender_names_en[predictions[idx]]
+        conf = confidences[idx]
+        is_correct = labels[idx] == predictions[idx]
+        
+        symbol = "✓" if is_correct else "✗"
+        text_color = (0, 200, 0) if is_correct else (200, 0, 0)  # 초록색 또는 빨간색
+        
+        # 텍스트 그리기 (영어)
+        text_line1 = f"{symbol} Actual: {actual} | Predicted: {predicted}"
+        text_line2 = f"Confidence: {conf:.1f}%"
+        
+        # 텍스트 배경 (가독성 향상)
+        text_bbox1 = draw.textbbox((x + 5, text_y), text_line1, font=font)
+        text_bbox2 = draw.textbbox((x + 5, text_y + 20), text_line2, font=font)
+        
+        # 반투명 배경
+        overlay = Image.new('RGBA', (cell_width, text_height), (255, 255, 255, 200))
+        grid_image.paste(overlay, (x, y + img_size), overlay)
+        
+        # 텍스트 그리기
+        draw.text((x + 5, text_y), text_line1, fill=text_color, font=font)
+        draw.text((x + 5, text_y + 20), text_line2, fill=(0, 0, 0), font=font)
+    
+    # 결과 이미지 저장
+    grid_image.save('evaluation_results.png', 'PNG', quality=95)
+    print("\n이미지 결과가 'evaluation_results.png' 파일로 저장되었습니다.")
+    
+    return grid_image
+
+# 이미지 표시
+print("\n이미지 결과 표시 중...")
+show_predictions(all_images, all_labels, all_predictions, all_confidences)
 
 # 전체 통계
 print("\n" + "=" * 80)

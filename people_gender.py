@@ -11,15 +11,28 @@ from sklearn.model_selection import train_test_split
 import random
 import psutil
 import os
+import argparse
+import time
+
+# ================================================================================
+# 명령줄 인자 파싱
+# ================================================================================
+parser = argparse.ArgumentParser(description='성별 분류 모델 학습')
+parser.add_argument('-cpu', '--cpu', action='store_true', 
+                    help='CPU로 강제 실행 (기본값: GPU 사용 가능 시 GPU 사용)')
+args = parser.parse_args()
 
 # ================================================================================
 # 설정 변수
 # ================================================================================
-NUM_SAMPLES = 10000  # None: 전체 데이터 사용, 숫자: 해당 개수만큼만 사용 (예: 100, 500, 1000)
+NUM_SAMPLES = 20000  # None: 전체 데이터 사용, 숫자: 해당 개수만큼만 사용 (예: 100, 500, 1000)
 BATCH_SIZE = None   # None: 자동 조정, 숫자: 고정 배치 사이즈 (예: 8, 16, 32, 64)
 RANDOM_SEED = 42    # 재현성을 위한 랜덤 시드
 MEMORY_SAFETY_MARGIN = 0.5  # 사용 가능 메모리의 몇 %까지 사용할지 (0.5 = 50%)
 SAMPLE_SIZE_PER_GB = 979  # GB당 샘플 수 (체크 결과 기반)
+
+# 전체 실행 시간 측정 시작
+total_start_time = time.time()
 
 # ================================================================================
 # 1. 데이터 로드 및 전처리
@@ -27,12 +40,13 @@ SAMPLE_SIZE_PER_GB = 979  # GB당 샘플 수 (체크 결과 기반)
 print("=" * 80)
 print("1단계: 데이터셋 로드 및 전처리")
 print("=" * 80)
+step1_start_time = time.time()
 
 # 랜덤 시드 설정 (재현성)
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
-if torch.cuda.is_available():
+if torch.cuda.is_available() and not args.cpu:
     torch.cuda.manual_seed_all(RANDOM_SEED)
 
 # 메모리 체크 및 샘플 수 자동 조정
@@ -97,6 +111,8 @@ if NUM_SAMPLES is not None and NUM_SAMPLES < total_size:
     print(f"샘플링 중: {NUM_SAMPLES}개 선택...")
     # 선택된 인덱스만 로드하여 DataFrame 생성
     df = pd.DataFrame(ds['train'].select(selected_indices))
+    # 원본 데이터셋 인덱스를 DataFrame에 추가 (평가 시 제외하기 위해)
+    df['original_index'] = selected_indices
     print(f"샘플링된 데이터 개수: {len(df)}개")
     # 샘플링된 데이터도 셔플 (랜덤 샘플링이지만 DataFrame 내에서도 셔플)
     df = df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
@@ -104,6 +120,8 @@ else:
     # 전체 데이터 사용 시에도 배치로 처리하여 메모리 효율성 향상
     print("전체 데이터셋을 DataFrame으로 변환 중... (시간이 걸릴 수 있습니다)")
     df = pd.DataFrame(ds['train'])
+    # 원본 인덱스 추가
+    df['original_index'] = range(len(df))
     print(f"전체 데이터 개수: {len(df)}개")
     # 데이터 셔플 (분할 전에 셔플 수행)
     df = df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
@@ -136,6 +154,8 @@ print(f"\n학습에 사용할 데이터 (여성/남성만): {len(df_filtered)}�
 if len(df_filtered) == 0:
     raise ValueError("학습에 사용할 수 있는 데이터가 없습니다!")
 
+step1_time = time.time() - step1_start_time
+print(f"\n[1단계 완료] 소요 시간: {step1_time:.2f}초 ({step1_time/60:.2f}분)")
 
 # ================================================================================
 # 2. PyTorch Dataset 클래스 정의
@@ -143,6 +163,7 @@ if len(df_filtered) == 0:
 print("\n" + "=" * 80)
 print("2단계: PyTorch Dataset 클래스 정의")
 print("=" * 80)
+step2_start_time = time.time()
 
 
 class PeopleGenderDataset(Dataset):
@@ -208,6 +229,8 @@ print("이미지 전처리 설정 완료:")
 print("  Train: Resize(224x224) + Augmentation (Flip, Rotation, ColorJitter) + Normalize")
 print("  Validation: Resize(224x224) + Normalize")
 
+step2_time = time.time() - step2_start_time
+print(f"\n[2단계 완료] 소요 시간: {step2_time:.2f}초")
 
 # ================================================================================
 # 3. Train/Validation 데이터 분할
@@ -215,6 +238,7 @@ print("  Validation: Resize(224x224) + Normalize")
 print("\n" + "=" * 80)
 print("3단계: Train/Validation 데이터 분할")
 print("=" * 80)
+step3_start_time = time.time()
 
 # 80:20 분할 (성별 비율 유지)
 train_df, val_df = train_test_split(
@@ -224,12 +248,49 @@ train_df, val_df = train_test_split(
     stratify=df_filtered['gender']  # 성별 비율 유지
 )
 
-print(f"Train 데이터: {len(train_df)}개")
+# 학습에 사용한 원본 데이터셋 인덱스 저장 (평가 시 제외하기 위해)
+used_indices = set(train_df['original_index'].tolist() + val_df['original_index'].tolist())
+import json
+with open('training_indices.json', 'w') as f:
+    json.dump(list(used_indices), f)
+print(f"\n[데이터 분리 정보] 학습에 사용한 원본 인덱스 {len(used_indices)}개를 'training_indices.json'에 저장했습니다.")
+print(f"  이 인덱스들은 evaluate_model.py에서 제외됩니다.")
+
+print(f"\nTrain 데이터: {len(train_df)}개")
 print(f"  - 여성: {len(train_df[train_df['gender'] == 1])}명, 남성: {len(train_df[train_df['gender'] == 2])}명")
 print(f"Validation 데이터: {len(val_df)}개")
 print(f"  - 여성: {len(val_df[val_df['gender'] == 1])}명, 남성: {len(val_df[val_df['gender'] == 2])}명")
 
-# 배치 사이즈 자동 조정
+# 배치 사이즈 자동 조정 (GPU 메모리 고려)
+def adjust_batch_size_for_gpu(data_size, initial_batch_size, force_cpu=False):
+    """GPU 메모리를 고려하여 배치 사이즈 조정"""
+    if not torch.cuda.is_available() or force_cpu:
+        return initial_batch_size
+    
+    # GPU 메모리 확인
+    gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    free_memory_gb = (torch.cuda.get_device_properties(0).total_memory - 
+                     torch.cuda.memory_allocated(0)) / (1024**3)
+    
+    # 배치당 예상 GPU 메모리 사용량 (224x224 RGB 이미지 기준, 대략적 추정)
+    # ResNet18 + 배치: 약 0.5GB per batch (배치 사이즈 32 기준)
+    memory_per_batch_gb = 0.5 * (initial_batch_size / 32)
+    
+    # 안전 여유를 두고 사용 가능한 메모리의 70%만 사용
+    safe_gpu_memory = free_memory_gb * 0.7
+    
+    # GPU 메모리가 부족하면 배치 사이즈 감소
+    if memory_per_batch_gb > safe_gpu_memory:
+        adjusted_batch = max(1, int(initial_batch_size * (safe_gpu_memory / memory_per_batch_gb)))
+        print(f"\n[GPU 메모리 체크]")
+        print(f"  GPU 메모리: {gpu_memory_gb:.2f} GB (사용 가능: {free_memory_gb:.2f} GB)")
+        print(f"  예상 배치 메모리: {memory_per_batch_gb:.2f} GB")
+        print(f"  안전 메모리 한계: {safe_gpu_memory:.2f} GB")
+        print(f"  배치 사이즈 조정: {initial_batch_size} → {adjusted_batch}")
+        return adjusted_batch
+    
+    return initial_batch_size
+
 if BATCH_SIZE is None:
     # train 데이터 개수에 따라 자동 조정
     if len(train_df) < 100:
@@ -245,16 +306,38 @@ else:
     batch_size = BATCH_SIZE
     print(f"배치 사이즈 고정: {batch_size}")
 
+# GPU 메모리를 고려한 배치 사이즈 조정
+batch_size = adjust_batch_size_for_gpu(len(train_df), batch_size, force_cpu=args.cpu)
+
 # Dataset 및 DataLoader 생성 (Train은 Augmentation 적용, Validation은 기본 전처리만)
 train_dataset = PeopleGenderDataset(train_df, transform=train_transform)
 val_dataset = PeopleGenderDataset(val_df, transform=val_transform)
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+# DataLoader 설정: GPU 사용 시 pin_memory=True로 설정하여 데이터 전송 최적화
+# num_workers는 메모리 사용량을 고려하여 0으로 설정 (필요시 조정 가능)
+num_workers = 0  # 멀티프로세싱 시 메모리 사용량 증가하므로 0으로 설정
+pin_memory = torch.cuda.is_available() and not args.cpu  # GPU 사용 시에만 pin_memory 활성화
+
+train_loader = DataLoader(
+    train_dataset, 
+    batch_size=batch_size, 
+    shuffle=True,
+    num_workers=num_workers,
+    pin_memory=pin_memory
+)
+val_loader = DataLoader(
+    val_dataset, 
+    batch_size=batch_size, 
+    shuffle=False,
+    num_workers=num_workers,
+    pin_memory=pin_memory
+)
 
 print(f"Train Batch 개수: {len(train_loader)}")
 print(f"Validation Batch 개수: {len(val_loader)}")
 
+step3_time = time.time() - step3_start_time
+print(f"\n[3단계 완료] 소요 시간: {step3_time:.2f}초")
 
 # ================================================================================
 # 4. Transfer Learning 모델 정의 (ResNet18)
@@ -262,6 +345,7 @@ print(f"Validation Batch 개수: {len(val_loader)}")
 print("\n" + "=" * 80)
 print("4단계: Transfer Learning 모델 정의 (ResNet18)")
 print("=" * 80)
+step4_start_time = time.time()
 
 
 def create_resnet_model(num_classes=2, pretrained=True):
@@ -285,23 +369,41 @@ def create_resnet_model(num_classes=2, pretrained=True):
 
 
 # 모델 초기화
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# 명령줄 인자에 따라 디바이스 선택
+if args.cpu:
+    device = torch.device('cpu')
+    print("\n[디바이스 설정] CPU로 강제 실행 (--cpu 플래그 사용)")
+else:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        print("\n[디바이스 설정] GPU 사용")
+    else:
+        print("\n[디바이스 설정] CUDA를 사용할 수 없어 CPU로 실행")
+
 model = create_resnet_model(num_classes=2, pretrained=True).to(device)  # 이진 분류: 여성(0) / 남성(1)
 
-if torch.cuda.is_available():
+if torch.cuda.is_available() and not args.cpu:
     print("사전학습된 ResNet18 모델 로드 완료 (ImageNet 가중치 사용)")
 else:
     print("사전학습된 ResNet18 모델 로드 완료 (ImageNet 가중치 사용)")
-    print("주의: CPU로 학습하므로 시간이 오래 걸릴 수 있습니다.")
+    if args.cpu:
+        print("CPU 모드로 실행 중입니다.")
+    else:
+        print("주의: CPU로 학습하므로 시간이 오래 걸릴 수 있습니다.")
 
 print(f"모델 초기화 완료")
 print(f"사용 디바이스: {device}")
-if torch.cuda.is_available():
+if torch.cuda.is_available() and not args.cpu:
     print(f"GPU 이름: {torch.cuda.get_device_name(0)}")
     print(f"GPU 메모리: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+elif args.cpu:
+    print("CPU 모드로 실행 중입니다.")
 else:
     print("경고: CUDA를 사용할 수 없습니다. CPU로 학습합니다.")
 print(f"모델 파라미터 개수: {sum(p.numel() for p in model.parameters()):,}")
+
+step4_time = time.time() - step4_start_time
+print(f"\n[4단계 완료] 소요 시간: {step4_time:.2f}초")
 
 
 # ================================================================================
@@ -310,6 +412,7 @@ print(f"모델 파라미터 개수: {sum(p.numel() for p in model.parameters()):
 print("\n" + "=" * 80)
 print("5단계: 손실 함수 및 옵티마이저 설정")
 print("=" * 80)
+step5_start_time = time.time()
 
 # 클래스 가중치 계산 (불균형 데이터 보정)
 # 여성(0)과 남성(1)의 비율에 반비례하는 가중치 부여
@@ -335,6 +438,8 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 print("손실 함수: Cross Entropy Loss (클래스 가중치 적용)")
 print("옵티마이저: Adam (lr=0.001)")
 
+step5_time = time.time() - step5_start_time
+print(f"\n[5단계 완료] 소요 시간: {step5_time:.2f}초")
 
 # ================================================================================
 # 6. 학습 및 평가 함수 정의
@@ -342,6 +447,7 @@ print("옵티마이저: Adam (lr=0.001)")
 print("\n" + "=" * 80)
 print("6단계: 학습 및 평가 함수 정의")
 print("=" * 80)
+step6_start_time = time.time()
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
@@ -420,6 +526,8 @@ def evaluate(model, dataloader, criterion, device):
 
 print("학습 및 평가 함수 정의 완료")
 
+step6_time = time.time() - step6_start_time
+print(f"\n[6단계 완료] 소요 시간: {step6_time:.2f}초")
 
 # ================================================================================
 # 7. 모델 학습 실행
@@ -427,6 +535,7 @@ print("학습 및 평가 함수 정의 완료")
 print("\n" + "=" * 80)
 print("7단계: 모델 학습 시작")
 print("=" * 80)
+step7_start_time = time.time()
 
 num_epochs = 30
 best_val_accuracy = 0.0
@@ -455,6 +564,10 @@ for epoch in range(num_epochs):
     else:
         patience_counter += 1
     
+    # GPU 메모리 정리 (메모리 누수 방지)
+    if torch.cuda.is_available() and not args.cpu:
+        torch.cuda.empty_cache()
+    
     # 진행 상황 출력 (5 에포크마다 또는 첫 에포크)
     if (epoch + 1) % 5 == 0 or epoch == 0:
         print(f"Epoch [{epoch+1}/{num_epochs}]")
@@ -462,6 +575,9 @@ for epoch in range(num_epochs):
         print(f"  Val Loss:   {val_loss:.4f} | Val Accuracy:   {val_acc:.2f}%")
         print(f"    - 여성 정확도: {val_female_acc:.2f}% | 남성 정확도: {val_male_acc:.2f}%")
         print(f"  Best Val Accuracy: {best_val_accuracy:.2f}%")
+        if torch.cuda.is_available() and not args.cpu:
+            gpu_memory_used = torch.cuda.memory_allocated(0) / (1024**3)
+            print(f"  GPU 메모리 사용량: {gpu_memory_used:.2f} GB")
         if patience_counter > 0:
             print(f"  Early Stopping: {patience_counter}/{patience} (개선 없음)")
         print("-" * 60)
@@ -476,6 +592,8 @@ print("\n학습 완료!")
 print(f"최고 Validation Accuracy: {best_val_accuracy:.2f}%")
 print(f"모델 저장 위치: best_gender_model.pth")
 
+step7_time = time.time() - step7_start_time
+print(f"\n[7단계 완료] 소요 시간: {step7_time:.2f}초 ({step7_time/60:.2f}분)")
 
 # ================================================================================
 # 8. 테스트 예측 (샘플 확인)
@@ -483,9 +601,10 @@ print(f"모델 저장 위치: best_gender_model.pth")
 print("\n" + "=" * 80)
 print("8단계: 샘플 예측 확인")
 print("=" * 80)
+step8_start_time = time.time()
 
 # 최고 모델 로드
-model.load_state_dict(torch.load('best_gender_model.pth'))
+model.load_state_dict(torch.load('best_gender_model.pth', map_location=device))
 model.eval()
 
 # Validation 데이터에서 몇 개 샘플 예측
@@ -512,8 +631,27 @@ with torch.no_grad():
             print(f"{is_correct} 실제: {actual_gender:3s} | 예측: {predicted_gender:3s} | "
                   f"신뢰도: {confidence:.1f}%")
 
+step8_time = time.time() - step8_start_time
+print(f"\n[8단계 완료] 소요 시간: {step8_time:.2f}초")
+
+# 전체 실행 시간 계산
+total_time = time.time() - total_start_time
+
 print("\n" + "=" * 80)
 print("모든 작업 완료!")
+print("=" * 80)
+print(f"\n[전체 실행 시간 요약]")
+print(f"  디바이스: {device}")
+print(f"  1단계 (데이터 로드 및 전처리): {step1_time:.2f}초 ({step1_time/60:.2f}분)")
+print(f"  2단계 (Dataset 클래스 정의): {step2_time:.2f}초")
+print(f"  3단계 (Train/Validation 분할): {step3_time:.2f}초")
+print(f"  4단계 (모델 정의): {step4_time:.2f}초")
+print(f"  5단계 (손실 함수 및 옵티마이저): {step5_time:.2f}초")
+print(f"  6단계 (학습/평가 함수 정의): {step6_time:.2f}초")
+print(f"  7단계 (모델 학습): {step7_time:.2f}초 ({step7_time/60:.2f}분)")
+print(f"  8단계 (샘플 예측): {step8_time:.2f}초")
+print(f"  ─────────────────────────────────────────────")
+print(f"  총 실행 시간: {total_time:.2f}초 ({total_time/60:.2f}분)")
 print("=" * 80)
 
 
