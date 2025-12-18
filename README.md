@@ -36,26 +36,31 @@ python people_gender.py
 
 ## 모델 구조
 
-### SimpleCNN 아키텍처
+### ResNet18 Transfer Learning 아키텍처
 ```
-Input: 128x128x3 RGB 이미지
-├── Conv2D (32 filters) + ReLU + MaxPool → 64x64
-├── Conv2D (64 filters) + ReLU + MaxPool → 32x32
-├── Conv2D (128 filters) + ReLU + MaxPool → 16x16
-├── Flatten
-├── FC (256) + ReLU + Dropout(0.3)
-├── FC (64) + ReLU
-└── FC (2) → 성별 분류 (여성/남성)
+Input: 224x224x3 RGB 이미지
+  ↓
+ResNet18 Backbone (ImageNet 사전학습)
+  ↓
+FC Layer 구조:
+  - Dropout(0.5)
+  - Linear(512, 512)
+  - ReLU
+  - Dropout(0.3)
+  - Linear(512, 2)
+  ↓
+Output: [여성 확률, 남성 확률]
 ```
 
 ### 하이퍼파라미터
-- **입력 크기**: 128x128 RGB
-- **배치 크기**: 자동 조정 (데이터 크기에 따라 4, 8, 16, 32)
-- **에포크**: 30
+- **입력 크기**: 224x224 RGB
+- **모델**: ResNet18 (Transfer Learning, ImageNet 사전학습)
+- **배치 크기**: 자동 조정 (데이터 크기 및 GPU 메모리에 따라)
+- **에포크**: 30 (Early Stopping 적용)
 - **학습률**: 0.001
 - **옵티마이저**: Adam
-- **손실 함수**: Cross Entropy Loss
-- **평가 지표**: Accuracy (정확도)
+- **손실 함수**: Cross Entropy Loss (클래스 가중치 적용)
+- **평가 지표**: Accuracy (정확도), 클래스별 정확도
 
 ## 실행 결과
 
@@ -77,8 +82,20 @@ Input: 128x128x3 RGB 이미지
 ## 데이터 전처리
 
 ### 이미지 변환
+
+**Train (Data Augmentation 포함)**:
 ```python
-- Resize: 128x128
+- Resize: 224x224
+- RandomHorizontalFlip: 50% 확률
+- RandomRotation: ±15도
+- ColorJitter: 밝기, 대비, 채도 조정
+- ToTensor: [0, 1] 범위로 정규화
+- Normalize: ImageNet 평균/표준편차 사용
+```
+
+**Validation/Test**:
+```python
+- Resize: 224x224
 - ToTensor: [0, 1] 범위로 정규화
 - Normalize: ImageNet 평균/표준편차 사용
 ```

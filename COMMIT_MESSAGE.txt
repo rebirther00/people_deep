@@ -1,0 +1,52 @@
+성별 분류 모델 구현 및 프로젝트 구조 개선
+
+주요 변경사항:
+
+1. 학습 과제 변경: 나이 예측 → 성별 분류
+   - 나이 예측의 이미지 촬영 시점과 계산 시점 불일치 문제 해결
+   - 성별 분류로 유의미한 학습 과제로 전환
+
+2. 모델 아키텍처 개선: SimpleCNN → ResNet18 Transfer Learning
+   - ResNet18 기반 Transfer Learning 적용 (ImageNet 사전학습)
+   - 입력 크기 128x128 → 224x224로 변경
+   - 더 높은 성능과 일반화 능력 확보
+
+3. 데이터 품질 개선
+   - 사망한 사람 제외 (deathday 컬럼 체크)
+   - 데이터 셔플 (Train/Validation 분할 전)
+   - 성별이 명확한 데이터만 사용 (gender: 1=여성, 2=남성)
+   - 성별 비율 유지하며 분할 (stratify 적용)
+
+4. 학습 기능 개선
+   - Data Augmentation (Flip, Rotation, ColorJitter)
+   - 클래스 가중치 적용 (불균형 데이터 보정)
+   - Early Stopping 구현 (patience=5)
+   - 메모리 체크 및 자동 샘플 수 조정
+   - GPU 메모리 고려 배치 사이즈 자동 조정
+   - 단계별 실행 시간 측정
+
+5. 평가 시스템 구축
+   - evaluate_model.py: 데이터셋 평가 (학습 데이터 제외, 랜덤 샘플)
+   - evaluate_real_images.py: 로컬 이미지 파일 평가
+   - 결과 이미지 그리드 생성 (영어 표시)
+   - 클래스별 정확도 계산 및 오류 분석
+
+6. 프로젝트 구조 정리
+   - people_birth.py 삭제 (잘못 구현된 나이 예측 코드)
+   - best_age_model.pth 삭제 (사용하지 않는 모델 파일)
+   - PROJECT_STRUCTURE.md 생성 (프로젝트 구조 문서화)
+   - README.md 업데이트 (ResNet18 모델 정보 반영)
+
+파일 변경 내역:
+- 추가: people_gender.py, evaluate_model.py, evaluate_real_images.py
+- 추가: PROJECT_STRUCTURE.md, COMMIT_MESSAGE.md
+- 삭제: people_birth.py, best_age_model.pth
+- 수정: README.md
+
+기술 스택:
+- 모델: ResNet18 (Transfer Learning)
+- 입력: 224x224 RGB 이미지
+- 출력: 2개 클래스 (여성/남성)
+- 손실 함수: Cross Entropy Loss (클래스 가중치 적용)
+- 옵티마이저: Adam (lr=0.001)
+
