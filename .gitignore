@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# PyTorch 모델 파일
+*.pth
+*.pt
+*.pkl
+*.ckpt
+
+# 데이터 파일
+*.h5
+*.hdf5
+*.npz
+
+# 이미지 데이터 (용량이 큰 경우)
+# real_data/
+# *.jpg
+# *.jpeg
+# *.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그 및 임시 파일
+*.log
+*.tmp
+.cursor/
+
+# 학습 결과
+training_indices.json
+evaluation_results.png
+real_data_evaluation_results.png
+

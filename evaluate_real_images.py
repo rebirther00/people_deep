@@ -93,6 +93,10 @@ for ext in IMAGE_EXTENSIONS:
     image_paths.extend(glob.glob(os.path.join(IMAGE_DIR, ext)))
     image_paths.extend(glob.glob(os.path.join(IMAGE_DIR, ext.upper())))
 
+# 중복 제거 (Windows에서 대소문자 구분 없이 중복 인식되는 문제 해결)
+image_paths = list(set([os.path.normpath(path) for path in image_paths]))
+image_paths.sort()  # 정렬
+
 if len(image_paths) == 0:
     raise ValueError(f"'{IMAGE_DIR}' 폴더에서 이미지 파일을 찾을 수 없습니다!")
 
